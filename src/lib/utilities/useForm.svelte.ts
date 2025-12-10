@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { AnyInstance } from '@/utilities/assertion';
 import type { HttpError, RemoteCommand } from '@sveltejs/kit';
 import { toast } from 'svelte-sonner';
 import type { Action } from 'svelte/action';
@@ -18,17 +19,18 @@ export type useFormConfig<Schema extends z.ZodObject, T> = {
 
 const MultiInputFieldRegex = new RegExp(/^(?:([a-zA-Z0-9]+)\[([0-9]{1,})\])$/);
 
-type FormElement = HTMLInputElement | HTMLSelectElement | HTMLButtonElement;
+type FormElement = HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 
 export class FormManager<Schema extends z.ZodObject, T> {
 	private readonly schema: Schema;
 	private readonly validate: ValidationEvent;
-	private readonly data = new SvelteMap<keyof z.infer<Schema>, any>();
+	readonly data = new SvelteMap<keyof z.infer<Schema>, any>();
 	readonly errors = new SvelteMap<keyof z.infer<Schema>, string>();
 	private readonly remote: RemoteCommand<z.infer<Schema>, T>;
 	loading = $state<boolean>(false);
 	private readonly onsuccess: (res: Awaited<T>) => void | Promise<void>;
 	private readonly onerror?: (error: HttpError) => void | Promise<void>;
+	private readonly onchanges = new SvelteMap<keyof z.infer<Schema>, (value: any) => void | Promise<void>>()
 
 	constructor(config: useFormConfig<Schema, T>) {
 		this.schema = config.schema;
@@ -39,6 +41,10 @@ export class FormManager<Schema extends z.ZodObject, T> {
 		Object.entries(config.initial).forEach(([k, v]) => {
 			this.data.set(k, v);
 		});
+	}
+
+	onchange = (name: keyof z.infer<Schema>, callback: (value: any) => void | Promise<void>) => {
+		this.onchanges.set(name, callback)
 	}
 
 	validation = (name?: keyof z.infer<Schema>) => {
@@ -64,23 +70,16 @@ export class FormManager<Schema extends z.ZodObject, T> {
 				if (this.validate === 'onblur') this.validation(node.name);
 			};
 
-			const onchange = () => {
-				if (node instanceof HTMLInputElement) {
-					if (MultiInputFieldRegex.test(node.name)) {
-						const segments = MultiInputFieldRegex.exec(node.name);
-						if (segments === null) return;
-						// eslint-disable-next-line @typescript-eslint/no-unused-vars
-						const [_, name, index] = segments;
-						if (!this.data.has(name) || !(this.data.get(name) instanceof Map)) {
-							this.data.set(name, new SvelteMap([[index, name]]));
-						} else {
-							const map: SvelteMap<string, any> = this.data.get(name);
-							map.set(index, node.value);
-						}
-					} else if (node.type === 'checkbox') {
+			const onchange = async () => {
+				if (AnyInstance(node, HTMLInputElement, HTMLTextAreaElement, HTMLSelectElement)) {
+					if (AnyInstance(node, HTMLInputElement) && node.type === 'checkbox') {
 						this.data.set(node.name, node.checked);
 					} else {
-						this.data.set(node.name, node.value);
+						this.data.set(node.name, node.value)
+					}
+
+					if (this.onchanges.has(node.name)) {
+						await this.onchanges.get(node.name)!(this.data.get(node.name))
 					}
 				}
 			};
@@ -89,33 +88,11 @@ export class FormManager<Schema extends z.ZodObject, T> {
 				this.errors.delete(node.name);
 			};
 
-			if (node instanceof HTMLInputElement) {
-				if (MultiInputFieldRegex.test(node.name)) {
-					const segments = MultiInputFieldRegex.exec(node.name);
-					if (segments === null) {
-						throw new Error('Invalid MultiField Name');
-					}
-					// eslint-disable-next-line @typescript-eslint/no-unused-vars
-					const [_, name, index] = segments;
-
-					if (!this.data.has(name) || !(this.data.get(name) instanceof Map)) {
-						const init = this.data.get(name);
-						const map = new SvelteMap();
-						if (Array.isArray(init)) {
-							init.forEach((v, i) => {
-								map.set(i, v);
-							});
-						}
-						this.data.set(name, map);
-					}
-
-					node.value = this.data.get(name).get(index);
-				}
-
-				if (node.type === 'checkbox') {
+			if (AnyInstance(node, HTMLInputElement, HTMLTextAreaElement, HTMLSelectElement)) {
+				if (AnyInstance(node, HTMLInputElement) && node.type === 'checkbox') {
 					node.checked = this.data.get(node.name) ?? false;
-				} else if (this.data.has(node.name)) {
-					node.value = this.data.get(node.name);
+				} else {
+					node.value = this.data.get(node.name) ?? '';
 				}
 			}
 
@@ -147,6 +124,7 @@ export class FormManager<Schema extends z.ZodObject, T> {
 
 					const res = await this.remote(parsed);
 					form.reset();
+					this.data.clear();
 					await this.onsuccess(res);
 				} catch (error: any) {
 					if (this.onerror) {

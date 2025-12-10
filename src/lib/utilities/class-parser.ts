@@ -1,4 +1,4 @@
-import { cn } from "@/utils";
+import { cn } from "$lib/utils";
 import type { ClassValue } from "svelte/elements";
 
 const DimensionRegex = new RegExp(
